@@ -1,0 +1,78 @@
+name: Build PD-patch Commit Image
+
+# Build & push the Qwen3.5 PD+PP patch image on every commit to the patch
+# branch, on the self-hosted docker-builder (so pulls/pushes stay on the
+# internal network). Tagged with a fixed deploy tag (v0.5.12-pd-patch-2, which
+# NorthServing configs/sglang_openai_pd.yaml references) plus the short SHA.
+on:
+  push:
+    branches:
+      - feat/qwen3_5-pd-pp-fix
+  workflow_dispatch:
+    inputs:
+      deploy_tag:
+        description: "Fixed deploy tag to publish"
+        required: false
+        type: string
+        default: v0.5.12-pd-patch-2
+
+env:
+  IMAGE: harbor.local.clusters/bp/lmsysorg/sglang
+  DEPLOY_TAG: ${{ github.event.inputs.deploy_tag || 'v0.5.12-pd-patch-2' }}
+
+jobs:
+  build-and-push:
+    name: Build & Push PD-patch image
+    runs-on: [self-hosted, linux, docker-builder]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tags
+        id: tags
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${DEPLOY_TAG} and ${IMAGE}:${SHORT_SHA}"
+
+      - name: Log in to internal Harbor (or rely on runner ambient auth)
+        run: |
+          if [ -n "${{ secrets.HARBOR_USERNAME }}" ]; then
+            echo "${{ secrets.HARBOR_PASSWORD }}" \
+              | docker login harbor.local.clusters \
+                  -u "${{ secrets.HARBOR_USERNAME }}" \
+                  --password-stdin
+          else
+            echo "No HARBOR_USERNAME secret on this repo; relying on the "\
+                 "docker-builder runner's pre-configured Harbor credentials."
+          fi
+
+      - name: Build image
+        run: |
+          docker build \
+            -f Dockerfile.pd-patch \
+            -t "${IMAGE}:${DEPLOY_TAG}" \
+            -t "${IMAGE}:${DEPLOY_TAG}-${{ steps.tags.outputs.sha }}" \
+            .
+
+      - name: Push image
+        run: |
+          docker push "${IMAGE}:${DEPLOY_TAG}"
+          docker push "${IMAGE}:${DEPLOY_TAG}-${{ steps.tags.outputs.sha }}"
+
+      - name: Logout from Harbor
+        if: always()
+        run: docker logout harbor.local.clusters || true
+
+      - name: Summary
+        run: |
+          {
+            echo "### PD-patch image published"
+            echo ""
+            echo "- \`${IMAGE}:${DEPLOY_TAG}\` (stable deploy tag)"
+            echo "- \`${IMAGE}:${DEPLOY_TAG}-${{ steps.tags.outputs.sha }}\` (commit-pinned)"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- branch: \`${GITHUB_REF_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

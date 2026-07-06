@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+#
+# Qwen3.5-397B PD + pipeline-parallel patch image.
+#
+# The feat/qwen3_5-pd-pp-fix branch is pure-Python patches on top of the
+# v0.5.12 release (hybrid-linear/Mamba PD+PP KV & state transfer fixes, the
+# full-attention PP offset, PP prefix-length consensus with HiCache, and the
+# cow_mamba probe fix). So we just overlay the branch's python/sglang tree onto
+# the released v0.5.12 image -- no kernel rebuild needed.
+#
+# Built per-commit on the self-hosted docker-builder runner by
+# .github/workflows/build-commit-image.yml and tagged v0.5.12-pd-patch-2
+# (the tag the NorthServing configs/sglang_openai_pd.yaml deploys) plus the
+# short commit SHA.
+
+FROM harbor.local.clusters/bp/lmsysorg/sglang:v0.5.12
+
+# Overlay the patched Python sources over the editable install in the base image
+# (base keeps sglang at /sgl-workspace/sglang). COPY merges/overwrites; the
+# branch tree is the full v0.5.12 tree + patches, so this yields exactly the
+# branch code.
+COPY python/sglang /sgl-workspace/sglang/python/sglang
+
+# Fail the build early on any syntax error in the patched hot files.
+RUN python3 -m py_compile \
+      /sgl-workspace/sglang/python/sglang/srt/disaggregation/base/conn.py \
+      /sgl-workspace/sglang/python/sglang/srt/disaggregation/common/conn.py \
+      /sgl-workspace/sglang/python/sglang/srt/disaggregation/mooncake/conn.py \
+      /sgl-workspace/sglang/python/sglang/srt/disaggregation/prefill.py \
+      /sgl-workspace/sglang/python/sglang/srt/disaggregation/utils.py \
+      /sgl-workspace/sglang/python/sglang/srt/managers/schedule_batch.py \
+      /sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py \
+      /sgl-workspace/sglang/python/sglang/srt/managers/scheduler_pp_mixin.py \
+      /sgl-workspace/sglang/python/sglang/srt/mem_cache/memory_pool.py \
+      /sgl-workspace/sglang/python/sglang/srt/model_executor/model_runner_kv_cache_mixin.py \
+   && echo "pd-patch python files compiled OK"
